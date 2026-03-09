@@ -234,6 +234,8 @@ const defaultStyles = [
 
 const placeholderVae = 'Automatic';
 
+let characterPresetCache = [];
+
 const defaultSettings = {
     source: sources.extras,
 
@@ -264,6 +266,11 @@ const defaultSettings = {
     sampler: 'DDIM',
     model: '',
     vae: '',
+    style_lora: '',
+    character_lora: '',
+    character_preset_1: '',
+    character_preset_2: '',
+    character_preset_3: '',
     seed: -1,
 
     // Automatic1111/Horde exclusives
@@ -581,6 +588,14 @@ async function loadSettings() {
     registerFunctionTool();
 
     await loadSettingOptions();
+
+    refreshCharacterPresetSelectedLabel(1);
+    refreshCharacterPresetSelectedLabel(2);
+    refreshCharacterPresetSelectedLabel(3);
+
+    $('#sd_character_preset_results_1').hide();
+    $('#sd_character_preset_results_2').hide();
+    $('#sd_character_preset_results_3').hide();
 }
 
 /**
@@ -615,7 +630,9 @@ async function loadSettingOptions() {
         loadModels(),
         loadSchedulers(),
         loadVaes(),
+        loadLoras(),
         loadComfyWorkflows(),
+        loadCharacterPresets(),
     ]);
 }
 
@@ -1561,6 +1578,17 @@ async function getDrawthingsRemoteModel() {
 
 async function onVaeChange() {
     extension_settings.sd.vae = $('#sd_vae').find(':selected').val();
+}
+
+async function onStyleLoraChange() {
+    extension_settings.sd.style_lora = $('#sd_style_lora').find(':selected').val();
+    saveSettingsDebounced();
+}
+
+async function onCharacterLoraChange() {
+    extension_settings.sd.character_lora = $('#sd_character_lora').find(':selected').val();
+    saveSettingsDebounced();
+    console.log('character change ->', extension_settings.sd.character_lora);
 }
 
 async function getAutoRemoteUpscalers() {
@@ -2718,6 +2746,53 @@ async function loadVaes() {
     }
 }
 
+async function loadLoras() {
+    $('#sd_style_lora').empty();
+    $('#sd_character_lora').empty();
+
+    let styleLoras = [];
+    let characterLoras = [];
+
+    switch (extension_settings.sd.source) {
+        case sources.comfy:
+            styleLoras = await loadComfyLoras('style/');
+            characterLoras = await loadComfyLoras('character/');
+            break;
+        default:
+            styleLoras = [];
+            characterLoras = [];
+            break;
+    }
+
+    const populateSelect = (selector, items, settingKey) => {
+        const $select = $(selector);
+        const savedValue = extension_settings.sd[settingKey] || '';
+
+        for (const item of items) {
+            const option = document.createElement('option');
+            option.innerText = item;
+            option.value = item;
+            option.selected = item === savedValue;
+            $select.append(option);
+        }
+
+        if (savedValue && items.includes(savedValue)) {
+            $select.val(savedValue);
+        } else {
+            const fallback = items[0] || '';
+            $select.val(fallback);
+            extension_settings.sd[settingKey] = fallback;
+        }
+
+        extension_settings.sd[settingKey] = $select.find(':selected').val() || '';
+    };
+
+    populateSelect('#sd_style_lora', styleLoras, 'style_lora');
+    populateSelect('#sd_character_lora', characterLoras, 'character_lora');
+
+    saveSettingsDebounced();
+}
+
 async function loadAutoVaes() {
     if (!extension_settings.sd.auto_url) {
         return ['N/A'];
@@ -2765,6 +2840,162 @@ async function loadComfyVaes() {
     } catch (error) {
         return [];
     }
+}
+
+async function loadComfyLoras(prefix = '') {
+    if (extension_settings.sd.comfy_type === comfyTypes.runpod_serverless) {
+        return ['N/A'];
+    }
+
+    if (!extension_settings.sd.comfy_url) {
+        return ['N/A'];
+    }
+
+    try {
+        const result = await fetch('/api/sd/comfy/loras', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                url: extension_settings.sd.comfy_url,
+                prefix,
+            }),
+        });
+
+        if (!result.ok) {
+            throw new Error('ComfyUI returned an error.');
+        }
+
+        return await result.json();
+    } catch (error) {
+        console.error(error);
+        return ['N/A'];
+    }
+}
+
+async function loadCharacterPresets() {
+    try {
+        const result = await fetch('/api/sd/character-presets', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+        });
+
+        if (!result.ok) {
+            throw new Error('Character presets returned an error.');
+        }
+
+        const data = await result.json();
+        characterPresetCache = Array.isArray(data) ? data : [];
+        return characterPresetCache;
+    } catch (error) {
+        console.error(error);
+        characterPresetCache = [];
+        return [];
+    }
+}
+
+function normalizeCharacterPresetSearchText(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function searchCharacterPresets(query) {
+    const q = normalizeCharacterPresetSearchText(query);
+
+    if (!q) {
+        return characterPresetCache.slice(0, 20);
+    }
+
+    return characterPresetCache
+        .filter(preset => {
+            const name = normalizeCharacterPresetSearchText(preset.name);
+            const id = normalizeCharacterPresetSearchText(preset.id);
+            const aliases = Array.isArray(preset.aliases)
+                ? preset.aliases.map(x => normalizeCharacterPresetSearchText(x))
+                : [];
+
+            return name.includes(q) || id.includes(q) || aliases.some(x => x.includes(q));
+        })
+        .slice(0, 20);
+}
+
+function refreshCharacterPresetSelectedLabel(slot) {
+    const settingKey = `character_preset_${slot}`;
+    const selectedId = extension_settings.sd[settingKey] || '';
+    const preset = characterPresetCache.find(x => x.id === selectedId);
+    $(`#sd_character_preset_selected_${slot}`).text(preset?.name || '(none)');
+}
+
+function selectCharacterPreset(slot, preset) {
+    const settingKey = `character_preset_${slot}`;
+    extension_settings.sd[settingKey] = preset.id;
+
+    $(`#sd_character_preset_search_${slot}`).val(preset.name);
+    $(`#sd_character_preset_selected_${slot}`).text(preset.name);
+
+    hideCharacterPresetResults(slot);
+    saveSettingsDebounced();
+}
+
+function renderCharacterPresetResults(slot, query) {
+    const $results = $(`#sd_character_preset_results_${slot}`);
+    $results.empty().show();
+
+    const matches = searchCharacterPresets(query);
+
+    if (matches.length === 0) {
+        return;
+    }
+
+    for (const preset of matches) {
+        const $item = $('<div></div>')
+            .addClass('menu_button')
+            .text(preset.name)
+            .attr('title', `${preset.name}${preset.id ? ` (${preset.id})` : ''}`)
+            .on('click', () => selectCharacterPreset(slot, preset));
+
+        $results.append($item);
+    }
+}
+
+function hideCharacterPresetResults(slot) {
+    $(`#sd_character_preset_results_${slot}`).hide().empty();
+}
+
+function clearCharacterPreset(slot) {
+    const settingKey = `character_preset_${slot}`;
+    extension_settings.sd[settingKey] = '';
+
+    $(`#sd_character_preset_search_${slot}`).val('');
+    $(`#sd_character_preset_selected_${slot}`).text('(none)');
+    hideCharacterPresetResults(slot);
+
+    saveSettingsDebounced();
+}
+
+function hideAllCharacterPresetResults() {
+    hideCharacterPresetResults(1);
+    hideCharacterPresetResults(2);
+    hideCharacterPresetResults(3);
+}
+
+function getCharacterPresetById(presetId) {
+    return characterPresetCache.find(x => x.id === presetId) || null;
+}
+
+function getCharacterSlotPrompt(slot) {
+    const presetId = extension_settings.sd[`character_preset_${slot}`] || '';
+    const preset = getCharacterPresetById(presetId);
+    return preset?.prompt || '';
+}
+
+function injectCharacterSlots(text) {
+    return String(text || '')
+        .replaceAll('{character1}', getCharacterSlotPrompt(1))
+        .replaceAll('{character2}', getCharacterSlotPrompt(2))
+        .replaceAll('{character3}', getCharacterSlotPrompt(3));
+}
+
+function getPromptPrefixWithCharacters() {
+    return injectCharacterSlots(extension_settings.sd.prompt_prefix || '');
 }
 
 async function loadComfyWorkflows() {
@@ -3311,9 +3542,11 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
 
     const skipCharPrefix = !ignoreNoCharForSwipe && noCharPrefix.includes(generationType);
 
+    const resolvedPromptPrefix = getPromptPrefixWithCharacters();
+
     const prefix = skipCharPrefix
-        ? extension_settings.sd.prompt_prefix
-        : combinePrefixes(extension_settings.sd.prompt_prefix, getCharacterPrefix());
+        ? resolvedPromptPrefix
+        : combinePrefixes(resolvedPromptPrefix, getCharacterPrefix());
 
     const negativePrefix = skipCharPrefix
         ? extension_settings.sd.negative_prompt
@@ -4256,6 +4489,9 @@ async function generateComfyImageCommon(prompt, negativePrompt, signal, basePath
             workflow = workflow.replaceAll('"%char_avatar%"', JSON.stringify(PNG_PIXEL));
         }
     }
+
+    console.log('before generate character_lora =', extension_settings.sd.character_lora);
+
     console.log(`{
         "prompt": ${workflow}
     }`);
@@ -4290,6 +4526,8 @@ async function generateComfyImage(prompt, negativePrompt, signal) {
     const placeholders = [
         'model',
         'vae',
+        'style_lora',
+        'character_lora',
         'sampler',
         'scheduler',
         'steps',
@@ -5765,6 +6003,8 @@ jQuery(async () => {
     $('#sd_steps').on('input', onStepsInput);
     $('#sd_model').on('change', onModelChange);
     $('#sd_vae').on('change', onVaeChange);
+    $('#sd_style_lora').on('change', onStyleLoraChange);
+    $('#sd_character_lora').on('change', onCharacterLoraChange);
     $('#sd_sampler').on('change', onSamplerChange);
     $('#sd_resolution').on('change', onResolutionChange);
     $('#sd_scheduler').on('change', onSchedulerChange);
@@ -5817,6 +6057,54 @@ jQuery(async () => {
     $('#sd_save_style').on('click', onSaveStyleClick);
     $('#sd_rename_style').on('click', onRenameStyleClick);
     $('#sd_delete_style').on('click', onDeleteStyleClick);
+    $('#sd_character_preset_search_1').on('input', function () {
+        const value = $(this).val();
+        if (!String(value || '').trim()) {
+            clearCharacterPreset(1);
+            return;
+        }
+        renderCharacterPresetResults(1, value);
+    });
+    $('#sd_character_preset_search_2').on('input', function () {
+        const value = $(this).val();
+        if (!String(value || '').trim()) {
+            clearCharacterPreset(2);
+            return;
+        }
+        renderCharacterPresetResults(2, value);
+    });
+    $('#sd_character_preset_search_3').on('input', function () {
+        const value = $(this).val();
+        if (!String(value || '').trim()) {
+            clearCharacterPreset(3);
+            return;
+        }
+        renderCharacterPresetResults(3, value);
+    });
+    $('#sd_character_preset_search_1').on('focus', function () {
+        renderCharacterPresetResults(1, $(this).val());
+    });
+    $('#sd_character_preset_search_2').on('focus', function () {
+        renderCharacterPresetResults(2, $(this).val());
+    });
+    $('#sd_character_preset_search_3').on('focus', function () {
+        renderCharacterPresetResults(3, $(this).val());
+    });
+    $(document).on('mousedown', function (event) {
+        const $target = $(event.target);
+
+        const clickedInsidePresetUi =
+            $target.closest('#sd_character_preset_search_1').length ||
+            $target.closest('#sd_character_preset_search_2').length ||
+            $target.closest('#sd_character_preset_search_3').length ||
+            $target.closest('#sd_character_preset_results_1').length ||
+            $target.closest('#sd_character_preset_results_2').length ||
+            $target.closest('#sd_character_preset_results_3').length;
+
+        if (!clickedInsidePresetUi) {
+            hideAllCharacterPresetResults();
+        }
+    });
     $('#sd_character_prompt_block').hide();
     $('#sd_interactive_mode').on('input', onInteractiveModeInput);
     $('#sd_openai_style').on('change', onOpenAiStyleSelect);

@@ -383,6 +383,27 @@ router.post('/sd-next/upscalers', async (request, response) => {
     }
 });
 
+router.post('/character-presets', async (request, response) => {
+    try {
+        const filePath = path.join(
+            process.cwd(),
+            'data/default-user/user/extensions/stable-diffusion/character-presets.json',
+        );
+
+        if (!fs.existsSync(filePath)) {
+            return response.send([]);
+        }
+
+        const text = fs.readFileSync(filePath, 'utf8');
+        const data = JSON.parse(text);
+
+        return response.send(Array.isArray(data?.presets) ? data.presets : []);
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
 const comfy = express.Router();
 
 comfy.post('/ping', async (request, response) => {
@@ -477,6 +498,31 @@ comfy.post('/vaes', async (request, response) => {
         /** @type {any} */
         const data = await result.json();
         return response.send(data.VAELoader.input.required.vae_name[0]);
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+comfy.post('/loras', async (request, response) => {
+    try {
+        const url = new URL(urlJoin(request.body.url, '/object_info'));
+
+        const result = await fetch(url);
+        if (!result.ok) {
+            throw new Error('ComfyUI returned an error.');
+        }
+
+        /** @type {any} */
+        const data = await result.json();
+        let loras = data.LoraLoader?.input?.required?.lora_name?.[0] || [];
+
+        const prefix = String(request.body.prefix || '').trim();
+        if (prefix) {
+            loras = loras.filter(name => typeof name === 'string' && name.startsWith(prefix));
+        }
+
+        return response.send(loras);
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
