@@ -641,10 +641,20 @@ comfy.post('/generate', async (request, response) => {
             /** @type {any} */
             const history = await result.json();
             item = history[id];
-            if (item) {
+            if (item?.status?.status_str === 'error') {
+                throw new Error('ComfyUI returned an error.');
+            }
+            const outputs = item?.outputs
+                ? Object.keys(item.outputs).map(key => item.outputs[key])
+                : [];
+            const hasRecognizableOutput =
+                outputs.some(output => Array.isArray(output.images) && output.images.length > 0) ||
+                outputs.some(output => Array.isArray(output.gifs) && output.gifs.length > 0);
+
+            if (item?.status?.completed === true && hasRecognizableOutput) {
                 break;
             }
-            await delay(100);
+            await delay(500);
         }
         if (item.status.status_str === 'error') {
             // Report node tracebacks if available
@@ -656,8 +666,13 @@ comfy.post('/generate', async (request, response) => {
             throw new Error(`ComfyUI generation did not succeed.\n\n${errorMessages}`.trim());
         }
         const outputs = Object.keys(item.outputs).map(it => item.outputs[it]);
-        console.debug('ComfyUI outputs:', outputs);
-        const imgInfo = outputs.map(it => it.images).flat()[0] ?? outputs.map(it => it.gifs).flat()[0];
+        console.log('ComfyUI status:', JSON.stringify(item.status, null, 2));
+        console.log('ComfyUI output keys:', Object.keys(item.outputs));
+        console.log('ComfyUI outputs JSON:', JSON.stringify(outputs, null, 2));
+        const images = outputs.flatMap(it => it.images ?? []);
+        const gifs = outputs.flatMap(it => it.gifs ?? []);
+        const imgInfo = images[0] ?? gifs[0];
+        console.log('ComfyUI selected output:', JSON.stringify(imgInfo, null, 2));
         if (!imgInfo) {
             throw new Error('ComfyUI did not return any recognizable outputs.');
         }
