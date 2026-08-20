@@ -669,9 +669,9 @@ comfy.post('/generate', async (request, response) => {
         console.log('ComfyUI status:', JSON.stringify(item.status, null, 2));
         console.log('ComfyUI output keys:', Object.keys(item.outputs));
         console.log('ComfyUI outputs JSON:', JSON.stringify(outputs, null, 2));
-        const images = outputs.flatMap(it => it.images ?? []);
-        const gifs = outputs.flatMap(it => it.gifs ?? []);
-        const imgInfo = images[0] ?? gifs[0];
+        console.debug('ComfyUI outputs:', outputs);
+        const imgInfo = outputs.map(it => it.images).filter(Array.isArray).flat()[0]
+            ?? outputs.map(it => it.gifs).filter(Array.isArray).flat()[0];
         console.log('ComfyUI selected output:', JSON.stringify(imgInfo, null, 2));
         if (!imgInfo) {
             throw new Error('ComfyUI did not return any recognizable outputs.');
@@ -1589,7 +1589,7 @@ bfl.post('/generate', async (request, response) => {
 
         console.debug('BFL request:', requestBody);
 
-        const result = await fetch(`https://api.bfl.ml/v1/${request.body.model}`, {
+        const result = await fetch(`https://api.bfl.ai/v1/${request.body.model}`, {
             method: 'POST',
             body: JSON.stringify(requestBody),
             headers: {
@@ -1606,12 +1606,18 @@ bfl.post('/generate', async (request, response) => {
         /** @type {any} */
         const taskData = await result.json();
         const { id } = taskData;
+        const pollingUrl = taskData.polling_url ?? `https://api.bfl.ai/v1/get_result?id=${id}`;
 
         const MAX_ATTEMPTS = 100;
         for (let i = 0; i < MAX_ATTEMPTS; i++) {
             await delay(2500);
 
-            const statusResult = await fetch(`https://api.bfl.ml/v1/get_result?id=${id}`);
+            // The bfl.ai API requires authentication on the polling request as well
+            const statusResult = await fetch(pollingUrl, {
+                headers: {
+                    'x-key': key,
+                },
+            });
 
             if (!statusResult.ok) {
                 const text = await statusResult.text();
