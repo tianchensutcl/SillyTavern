@@ -111,6 +111,8 @@ import {
     loadProxyPresets,
     selected_proxy,
     initOpenAI,
+    isCustomConnectionTransition,
+    deferSettingsSaveForCustomConnection,
 } from './scripts/openai.js';
 
 import {
@@ -804,6 +806,7 @@ function initStandaloneMode() {
 }
 
 export function cancelStatusCheck(reason = 'Manually cancelled status check') {
+    if (isCustomConnectionTransition()) return;
     abortStatusCheck?.abort(new AbortReason(reason));
     abortStatusCheck = new AbortController();
     setOnlineStatus('no_connection');
@@ -3306,14 +3309,15 @@ export async function getExtensionPrompt(position = extension_prompt_types.IN_PR
         }
         return true;
     };
-    const promptPromises = Object.keys(extension_prompts)
+    const candidates = Object.keys(extension_prompts)
         .sort()
         .map((x) => extension_prompts[x])
         .filter(x => x.position == position && x.value)
         .filter(x => depth === undefined || x.depth === undefined || x.depth === depth)
-        .filter(x => role === undefined || x.role === undefined || x.role === role)
-        .filter(filterByFunction);
-    const prompts = await Promise.all(promptPromises);
+        .filter(x => role === undefined || x.role === undefined || x.role === role);
+    // The filter function may be async, so it cannot be passed to Array.filter directly
+    const passes = await Promise.all(candidates.map(filterByFunction));
+    const prompts = candidates.filter((_, index) => passes[index]);
 
     let values = prompts.map(x => x.value.trim()).join(separator);
     if (wrap && values.length && !values.startsWith(separator)) {
@@ -7171,6 +7175,7 @@ export function setCharacterName(value) {
  * @param {string|'no_connection'} value Connection status value
  */
 export function setOnlineStatus(value) {
+    if (isCustomConnectionTransition()) return;
     const previousStatus = online_status;
     online_status = value;
     displayOnlineStatus();
@@ -8071,6 +8076,7 @@ export async function getSettings(initLoaderHandle = null) {
 
 //MARK: saveSettings()
 export async function saveSettings(loopCounter = 0) {
+    if (deferSettingsSaveForCustomConnection()) return;
     if (!settingsReady) {
         console.warn('Settings not ready, scheduling another save');
         saveSettingsDebounced();
@@ -11781,7 +11787,7 @@ jQuery(async function () {
         cancelStatusCheck('Canceled because main api changed');
         changeMainAPI();
         saveSettingsDebounced();
-        await eventSource.emit(event_types.MAIN_API_CHANGED, { apiId: main_api });
+        if (!isCustomConnectionTransition()) await eventSource.emit(event_types.MAIN_API_CHANGED, { apiId: main_api });
     });
 
     ////////////////// OPTIMIZED RANGE SLIDER LISTENERS////////////////
